@@ -1,0 +1,332 @@
+/* ============================================================================
+   MÓDULO DE SEGURIDAD Y GESTIÓN DE USUARIOS (Integración Grupo 6)
+   Script SQL Server - Base de datos, tablas, vistas y procedimientos
+   ----------------------------------------------------------------------------
+   Compatible con SQL Server 2008 en adelante.
+   Respeta el estándar de baja lógica, claves candidatas y manejo de errores
+   con TRY/CATCH y RAISERROR.
+   ============================================================================ */
+
+IF DB_ID('grupo6') IS NULL
+    CREATE DATABASE grupo6;
+GO
+
+USE grupo6;
+GO
+
+/* ============================================================================
+   1. TABLA ROLES
+   ============================================================================ */
+IF OBJECT_ID('dbo.Roles', 'U') IS NOT NULL DROP TABLE dbo.Roles;
+GO
+
+CREATE TABLE dbo.Roles
+(
+    Id_Rol      INT IDENTITY(1,1) NOT NULL,
+    Nombre_Rol  VARCHAR(50)       NOT NULL,
+    Permisos    VARCHAR(MAX)      NOT NULL,
+    Estado      BIT               NOT NULL CONSTRAINT DF_Roles_Estado DEFAULT (1),
+
+    CONSTRAINT PK_Roles PRIMARY KEY (Id_Rol),
+    CONSTRAINT UQ_Roles_Nombre UNIQUE (Nombre_Rol)
+);
+GO
+
+/* ============================================================================
+   2. TABLA USUARIOS
+   ----------------------------------------------------------------------------
+   El Nombre_Usuario y el Email son CLAVES CANDIDATAS (únicas).
+   ============================================================================ */
+IF OBJECT_ID('dbo.Usuarios', 'U') IS NOT NULL DROP TABLE dbo.Usuarios;
+GO
+
+CREATE TABLE dbo.Usuarios
+(
+    Id_Usuario       INT IDENTITY(1,1) NOT NULL,
+    Nombre_Usuario   VARCHAR(50)       NOT NULL,
+    Email            VARCHAR(100)      NOT NULL,
+    Nombre           VARCHAR(50)       NOT NULL,
+    Apellido         VARCHAR(50)       NOT NULL,
+    DNI              VARCHAR(20)       NULL,
+    Telefono         VARCHAR(20)       NULL,
+    Fecha_Registro   DATE              NOT NULL CONSTRAINT DF_Usuarios_Fecha DEFAULT (CAST(GETDATE() AS DATE)),
+    Estado           BIT               NOT NULL CONSTRAINT DF_Usuarios_Estado DEFAULT (1),
+
+    CONSTRAINT PK_Usuarios PRIMARY KEY (Id_Usuario),
+    CONSTRAINT UQ_Usuarios_NombreUsuario UNIQUE (Nombre_Usuario)
+);
+GO
+
+-- Índice único para el Email, pero SOLO aplica a usuarios activos. 
+-- Así, si damos de baja a un usuario, su email queda libre para volver a registrarse.
+CREATE UNIQUE NONCLUSTERED INDEX IX_Usuarios_Email_Activos 
+ON dbo.Usuarios(Email) WHERE Estado = 1;
+GO
+
+
+/* ============================================================================
+   3. TABLA USUARIOS_ROLES (Reemplaza familia y roles_familia)
+   ============================================================================ */
+IF OBJECT_ID('dbo.Usuarios_Roles', 'U') IS NOT NULL DROP TABLE dbo.Usuarios_Roles;
+GO
+
+CREATE TABLE dbo.Usuarios_Roles
+(
+    Id_Usuario INT NOT NULL,
+    Id_Rol     INT NOT NULL,
+
+    CONSTRAINT PK_Usuarios_Roles PRIMARY KEY (Id_Usuario, Id_Rol),
+    CONSTRAINT FK_UsuariosRoles_Usuario FOREIGN KEY (Id_Usuario) REFERENCES dbo.Usuarios(Id_Usuario),
+    CONSTRAINT FK_UsuariosRoles_Rol FOREIGN KEY (Id_Rol) REFERENCES dbo.Roles(Id_Rol)
+);
+GO
+
+
+/* ============================================================================
+   4. TABLA CONTRASEÑAS (Unifica contraseña e historial_contraseñas)
+   ----------------------------------------------------------------------------
+   Mantenemos el historial de claves. Solo puede haber UNA activa por usuario.
+   ============================================================================ */
+IF OBJECT_ID('dbo.Contrasenas', 'U') IS NOT NULL DROP TABLE dbo.Contrasenas;
+GO
+
+CREATE TABLE dbo.Contrasenas
+(
+    Id_Contrasena INT IDENTITY(1,1) NOT NULL,
+    Id_Usuario    INT               NOT NULL,
+    Clave_Hash    VARCHAR(255)      NOT NULL,
+    Fecha_Cambio  DATETIME          NOT NULL CONSTRAINT DF_Contrasenas_Fecha DEFAULT (GETDATE()),
+    Es_Activa     BIT               NOT NULL CONSTRAINT DF_Contrasenas_Activa DEFAULT (1),
+
+    CONSTRAINT PK_Contrasenas PRIMARY KEY (Id_Contrasena),
+    CONSTRAINT FK_Contrasenas_Usuario FOREIGN KEY (Id_Usuario) REFERENCES dbo.Usuarios(Id_Usuario)
+);
+GO
+
+
+/* ============================================================================
+   5. TABLAS DE PREGUNTAS DE SEGURIDAD
+   ============================================================================ */
+IF OBJECT_ID('dbo.Respuestas_Seguridad', 'U') IS NOT NULL DROP TABLE dbo.Respuestas_Seguridad;
+IF OBJECT_ID('dbo.Catalogo_Preguntas', 'U') IS NOT NULL DROP TABLE dbo.Catalogo_Preguntas;
+GO
+
+CREATE TABLE dbo.Catalogo_Preguntas
+(
+    Id_Pregunta INT IDENTITY(1,1) NOT NULL,
+    Pregunta    VARCHAR(150)      NOT NULL,
+    Estado      BIT               NOT NULL CONSTRAINT DF_Preguntas_Estado DEFAULT(1),
+
+    CONSTRAINT PK_Catalogo_Preguntas PRIMARY KEY (Id_Pregunta)
+);
+GO
+
+CREATE TABLE dbo.Respuestas_Seguridad
+(
+    Id_Respuesta INT IDENTITY(1,1) NOT NULL,
+    Id_Usuario   INT               NOT NULL,
+    Id_Pregunta  INT               NOT NULL,
+    Respuesta    VARCHAR(255)      NOT NULL,
+
+    CONSTRAINT PK_Respuestas_Seguridad PRIMARY KEY (Id_Respuesta),
+    CONSTRAINT FK_Resp_Seguridad_Usuario FOREIGN KEY (Id_Usuario) REFERENCES dbo.Usuarios(Id_Usuario),
+    CONSTRAINT FK_Resp_Seguridad_Pregunta FOREIGN KEY (Id_Pregunta) REFERENCES dbo.Catalogo_Preguntas(Id_Pregunta)
+);
+GO
+
+
+/* ============================================================================
+   6. VISTA dbo.vw_Usuarios_Activos
+   ----------------------------------------------------------------------------
+   Muestra la foto completa del usuario (Datos + Rol + Clave Activa)
+   ============================================================================ */
+IF OBJECT_ID('dbo.vw_Usuarios_Activos', 'V') IS NOT NULL DROP VIEW dbo.vw_Usuarios_Activos;
+GO
+
+CREATE VIEW dbo.vw_Usuarios_Activos
+AS
+SELECT 
+    u.Id_Usuario,
+    u.Nombre_Usuario,
+    u.Email,
+    u.Nombre,
+    u.Apellido,
+    r.Nombre_Rol AS Rol,
+    c.Clave_Hash,
+    u.Estado
+FROM dbo.Usuarios u
+INNER JOIN dbo.Usuarios_Roles ur ON u.Id_Usuario = ur.Id_Usuario
+INNER JOIN dbo.Roles r ON ur.Id_Rol = r.Id_Rol
+INNER JOIN dbo.Contrasenas c ON u.Id_Usuario = c.Id_Usuario
+WHERE c.Es_Activa = 1 AND u.Estado = 1;
+GO
+
+
+/* ============================================================================
+   7. sp_Usuario_Alta
+   ----------------------------------------------------------------------------
+   Registra al usuario, le asigna su rol y guarda su primera contraseña en 
+   una transacción segura (todo o nada).
+   ============================================================================ */
+IF OBJECT_ID('dbo.sp_Usuario_Alta', 'P') IS NOT NULL DROP PROCEDURE dbo.sp_Usuario_Alta;
+GO
+
+CREATE PROCEDURE dbo.sp_Usuario_Alta
+    @Nombre_Usuario VARCHAR(50),
+    @Email          VARCHAR(100),
+    @Nombre         VARCHAR(50),
+    @Apellido       VARCHAR(50),
+    @Id_Rol         INT,
+    @Clave_Hash     VARCHAR(255),
+    @Id_Generado    INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    SET @Nombre_Usuario = LTRIM(RTRIM(@Nombre_Usuario));
+    SET @Email          = LTRIM(RTRIM(@Email));
+
+    -- Validaciones
+    IF EXISTS (SELECT 1 FROM dbo.Usuarios WHERE Nombre_Usuario = @Nombre_Usuario)
+    BEGIN
+        RAISERROR('El nombre de usuario %s ya está en uso.', 16, 1, @Nombre_Usuario);
+        RETURN;
+    END
+
+    IF EXISTS (SELECT 1 FROM dbo.Usuarios WHERE Email = @Email AND Estado = 1)
+    BEGIN
+        RAISERROR('El email %s ya está registrado en una cuenta activa.', 16, 1, @Email);
+        RETURN;
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Id_Rol = @Id_Rol AND Estado = 1)
+    BEGIN
+        RAISERROR('El Rol seleccionado no existe o está inactivo.', 16, 1);
+        RETURN;
+    END
+
+    BEGIN TRAN;
+    BEGIN TRY
+        -- 1. Insertar Usuario
+        INSERT INTO dbo.Usuarios (Nombre_Usuario, Email, Nombre, Apellido)
+        VALUES (@Nombre_Usuario, @Email, @Nombre, @Apellido);
+
+        SET @Id_Generado = SCOPE_IDENTITY();
+
+        -- 2. Insertar Relación con el Rol
+        INSERT INTO dbo.Usuarios_Roles (Id_Usuario, Id_Rol)
+        VALUES (@Id_Generado, @Id_Rol);
+
+        -- 3. Insertar Contraseña Inicial
+        INSERT INTO dbo.Contrasenas (Id_Usuario, Clave_Hash, Es_Activa)
+        VALUES (@Id_Generado, @Clave_Hash, 1);
+
+        COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRAN;
+        DECLARE @Msg NVARCHAR(4000) = ERROR_MESSAGE();
+        RAISERROR(@Msg, 16, 1);
+    END CATCH;
+END;
+GO
+
+
+/* ============================================================================
+   8. sp_Usuario_ValidarLogin
+   ----------------------------------------------------------------------------
+   Verifica credenciales devolviendo los datos si es correcto.
+   ============================================================================ */
+IF OBJECT_ID('dbo.sp_Usuario_ValidarLogin', 'P') IS NOT NULL DROP PROCEDURE dbo.sp_Usuario_ValidarLogin;
+GO
+
+CREATE PROCEDURE dbo.sp_Usuario_ValidarLogin
+    @Nombre_Usuario VARCHAR(50),
+    @Clave_Hash     VARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.vw_Usuarios_Activos 
+                   WHERE Nombre_Usuario = @Nombre_Usuario AND Clave_Hash = @Clave_Hash)
+    BEGIN
+        RAISERROR('Usuario o contraseña incorrectos, o cuenta inactiva.', 16, 1);
+        RETURN;
+    END
+
+    -- Si pasa, devolvemos los datos para cargar en C#
+    SELECT Id_Usuario, Nombre_Usuario, Nombre, Apellido, Rol 
+    FROM dbo.vw_Usuarios_Activos
+    WHERE Nombre_Usuario = @Nombre_Usuario;
+END;
+GO
+
+
+/* ============================================================================
+   9. sp_Usuario_Baja (Reemplaza los hacks del email)
+   ----------------------------------------------------------------------------
+   Baja lógica real, apagando el usuario y sus contraseñas.
+   ============================================================================ */
+IF OBJECT_ID('dbo.sp_Usuario_Baja', 'P') IS NOT NULL DROP PROCEDURE dbo.sp_Usuario_Baja;
+GO
+
+CREATE PROCEDURE dbo.sp_Usuario_Baja
+    @Id_Usuario INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE Id_Usuario = @Id_Usuario AND Estado = 1)
+    BEGIN
+        RAISERROR('El usuario no existe o ya está dado de baja.', 16, 1);
+        RETURN;
+    END
+
+    BEGIN TRY
+        BEGIN TRAN;
+            -- Desactivar el usuario
+            UPDATE dbo.Usuarios SET Estado = 0 WHERE Id_Usuario = @Id_Usuario;
+            
+            -- Desactivar cualquier contraseña vigente para que no pueda loguear
+            UPDATE dbo.Contrasenas SET Es_Activa = 0 WHERE Id_Usuario = @Id_Usuario;
+        COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRAN;
+        DECLARE @Msg NVARCHAR(4000) = ERROR_MESSAGE();
+        RAISERROR(@Msg, 16, 1);
+    END CATCH;
+END;
+GO
+
+
+/* ============================================================================
+   10. DATOS DE PRUEBA Y EJEMPLOS DE EJECUCIÓN
+   ============================================================================ */
+-- 1. Insertamos roles básicos
+INSERT INTO dbo.Roles (Nombre_Rol, Permisos) VALUES ('Admin', 'TODOS');
+INSERT INTO dbo.Roles (Nombre_Rol, Permisos) VALUES ('Usuario', 'VENTAS_SOLO');
+GO
+
+-- 2. Insertamos catálogo de preguntas
+INSERT INTO dbo.Catalogo_Preguntas (Pregunta) VALUES ('¿Cuál es el nombre de tu primera mascota?');
+INSERT INTO dbo.Catalogo_Preguntas (Pregunta) VALUES ('¿En qué ciudad nació tu madre?');
+GO
+
+-- 3. Prueba de Alta de Usuario (F5 acá para probar)
+DECLARE @NuevoId INT;
+EXEC dbo.sp_Usuario_Alta 
+    @Nombre_Usuario = 'AdminIgnacio',
+    @Email = 'admin@constructora.com',
+    @Nombre = 'Ignacio',
+    @Apellido = 'Valiña',
+    @Id_Rol = 1,
+    @Clave_Hash = 'a36aef5a11c4073fbe60314fc9df530a9d5f986533594d1f5190742ff9e0e408',
+    @Id_Generado = @NuevoId OUTPUT;
+
+PRINT 'Usuario Admin creado con ID: ' + CAST(@NuevoId AS VARCHAR(10));
+GO
+
+-- 4. Prueba de Login exitoso
+EXEC dbo.sp_Usuario_ValidarLogin 'AdminIgnacio', 'a36aef5a11c4073fbe60314fc9df530a9d5f986533594d1f5190742ff9e0e408';
+GO
